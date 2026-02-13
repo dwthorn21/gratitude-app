@@ -61,215 +61,425 @@
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 
-  <script type="text/babel">
-    const {useState, useEffect, useMemo} = React;
+<script type="text/babel">
+  const {useState, useEffect, useMemo} = React;
 
-    const STORAGE_KEY = 'gratitudeEntries.v1';
-    const load = () => { try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}'); } catch { return {}; } };
-    const save = (data) => localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+  // ---- Storage helpers ----
+  const STORAGE_KEY = 'gratitudeEntries.v1';
+  const load = () => {
+    try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}'); }
+    catch { return {}; }
+  };
+  const save = (data) => localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
 
-    const tzLocalISODate = (d=new Date()) => {
-      const yr=d.getFullYear(), mo=String(d.getMonth()+1).padStart(2,'0'), da=String(d.getDate()).padStart(2,'0');
-      return `${yr}-${mo}-${da}`;
-    };
-    const addDays = (iso, delta) => {
-      const [y,m,d] = iso.split('-').map(Number);
-      const t = new Date(y, m-1, d); t.setDate(t.getDate()+delta);
-      return tzLocalISODate(t);
-    };
-    const humanDate = (iso) => {
-      const [y,m,d] = iso.split('-').map(Number);
-      return new Date(y, m-1, d).toLocaleDateString(undefined, {weekday:'short', year:'numeric', month:'short', day:'numeric'});
-    };
+  // ---- Date helpers ----
+  const tzLocalISODate = (d=new Date()) => {
+    const yr = d.getFullYear();
+    const mo = String(d.getMonth()+1).padStart(2,'0');
+    const da = String(d.getDate()).padStart(2,'0');
+    return `${yr}-${mo}-${da}`;
+  };
+  const addDays = (iso, delta) => {
+    const [y,m,d] = iso.split('-').map(Number);
+    const t = new Date(y, m-1, d);
+    t.setDate(t.getDate()+delta);
+    return tzLocalISODate(t);
+  };
+  const humanDate = (iso) => {
+    const [y,m,d] = iso.split('-').map(Number);
+    return new Date(y, m-1, d).toLocaleDateString(undefined, {weekday:'short', year:'numeric', month:'short', day:'numeric'});
+  };
+  const rangeDays = (startISO, endISO) => {
+    // inclusive range
+    const days = [];
+    let cur = startISO;
+    while (true) {
+      days.push(cur);
+      if (cur === endISO) break;
+      cur = addDays(cur, 1);
+    }
+    return days;
+  };
 
-    const computeStats = (entriesObj) => {
-      const days = Object.keys(entriesObj).filter(k => Array.isArray(entriesObj[k]) && entriesObj[k].some(Boolean)).sort();
-      if (days.length === 0) return { totalDays:0, currentStreak:0, longestStreak:0 };
-      let longest = 1, current = 0;
+  // ---- Stats (overall) ----
+  const computeStats = (entriesObj) => {
+    const days = Object.keys(entriesObj)
+      .filter(k => Array.isArray(entriesObj[k]) && entriesObj[k].some(Boolean))
+      .sort();
+    if (days.length === 0) return { totalDays:0, currentStreak:0, longestStreak:0 };
 
-      // current streak
-      let day = tzLocalISODate(new Date()), chain = 0;
-      for (let i=0;i<10000;i++){
-        if (days.includes(day)) { chain+=1; day = addDays(day, -1); } else break;
+    // current streak (ending today)
+    let day = tzLocalISODate(new Date());
+    let chain = 0;
+    for (let i=0;i<10000;i++){
+      if (days.includes(day)) { chain+=1; day = addDays(day, -1); } else break;
+    }
+    const current = chain;
+
+    // longest streak
+    let best = 1, streak = 1;
+    for (let i=1;i<days.length;i++){
+      const prev = addDays(days[i], -1);
+      if (prev === days[i-1]) { streak += 1; } else { best = Math.max(best, streak); streak = 1; }
+    }
+    const longest = Math.max(best, streak);
+    return { totalDays: days.length, currentStreak: current, longestStreak: longest };
+  };
+
+  // ---- CSV ----
+  const toCSV = (entries) => {
+    const rows = [['date','item1','item2','item3']];
+    const keys = Object.keys(entries).sort();
+    keys.forEach(k => {
+      const v = entries[k] || [];
+      rows.push([k, v[0]||'', v[1]||'', v[2]||'']);
+    });
+    return rows.map(r => r.map(x => `"${String(x).replace(/"/g,'""')}"`).join(',')).join('\n');
+  };
+
+  // ---- Simple text analysis for weekly view ----
+  const STOP = new Set([
+    'the','a','an','and','or','but','if','then','so','of','to','in','on','at','for','with','by','from','as','is','am','are','was','were',
+    'it','this','that','these','those','my','our','your','their','me','we','you','they','i',
+    'be','have','has','had','do','did','done','just','very','really','much','more','most',
+    'today','yesterday','tomorrow'
+  ]);
+  const normalizeWord = (w) => w.toLowerCase().replace(/[^a-z0-9']/g,'').replace(/^'+|'+$/g,'');
+  const topWords = (items, max=8) => {
+    const freq = new Map();
+    for (const s of items) {
+      const words = String(s).split(/\s+/);
+      for (let w of words) {
+        w = normalizeWord(w);
+        if (!w || STOP.has(w) || w.length < 3) continue;
+        freq.set(w, (freq.get(w)||0)+1);
       }
-      current = chain;
+    }
+    return [...freq.entries()].sort((a,b)=>b[1]-a[1]).slice(0, max);
+  };
 
-      // longest streak
-      let best = 1, streak = 1;
-      for (let i=1;i<days.length;i++){
-        const prev = addDays(days[i], -1);
-        if (prev === days[i-1]) streak += 1; else { best = Math.max(best, streak); streak = 1; }
+  // ---- Weekly View Component ----
+  function WeeklyView({data, addDays, tzLocalISODate, humanDate}) {
+    const [end, setEnd] = React.useState(tzLocalISODate(new Date()));
+    const start = addDays(end, -6);
+    const days = rangeDays(start, end);
+
+    const weekEntries = React.useMemo(()=>{
+      const subset = {};
+      for (const d of days) {
+        if (Array.isArray(data[d]) && data[d].some(Boolean)) subset[d] = data[d];
       }
-      longest = Math.max(best, streak);
-      return { totalDays: days.length, currentStreak: current, longestStreak: longest };
+      return subset;
+    }, [data, start, end]);
+
+    const stats = React.useMemo(()=>{
+      const keys = Object.keys(weekEntries).sort();
+      const items = [];
+      let fullDays = 0;
+      let totalItems = 0;
+      for (const d of keys) {
+        const arr = (weekEntries[d] || []).filter(Boolean);
+        totalItems += arr.length;
+        if (arr.length === 3) fullDays += 1;
+        items.push(...arr);
+      }
+      return {
+        daysCovered: days.length,
+        daysLogged: keys.length,
+        totalItems,
+        avgPerDay: keys.length ? (totalItems / keys.length) : 0,
+        fullDays,
+        items
+      };
+    }, [weekEntries, days]);
+
+    const words = React.useMemo(()=> topWords(stats.items, 10), [stats]);
+
+    const wins = React.useMemo(()=>{
+      return Object.keys(weekEntries)
+        .filter(d => (weekEntries[d]||[]).filter(Boolean).length === 3)
+        .sort();
+    }, [weekEntries]);
+
+    // Shareable summary text
+    const summaryText = React.useMemo(()=>{
+      const header = `Weekly Reflection (${humanDate(start)} – ${humanDate(end)})`;
+      const kpis = [
+        `Days logged: ${stats.daysLogged}/${stats.daysCovered}`,
+        `Entries: ${stats.totalItems} (avg ${stats.avgPerDay.toFixed(1)}/day)`,
+        `3/3 days: ${stats.fullDays}`
+      ].join(' · ');
+      const tw = words.length ? `Top themes: ${words.map(([w,c])=>`${w}(${c})`).join(', ')}` : '';
+      return [header, kpis, tw].filter(Boolean).join('\n');
+    }, [start, end, stats, words]);
+
+    const copySummary = async () => {
+      try { await navigator.clipboard.writeText(summaryText); alert('Summary copied to clipboard.'); }
+      catch { alert('Copy failed (clipboard not available).'); }
     };
 
-    const toCSV = (entries) => {
-      const rows = [['date','item1','item2','item3']];
-      const keys = Object.keys(entries).sort();
-      keys.forEach(k => {
-        const v = entries[k] || [];
-        rows.push([k, v[0]||'', v[1]||'', v[2]||'']);
-      });
-      return rows.map(r => r.map(x => `"${String(x).replace(/"/g,'""')}"`).join(',')).join('\n');
+    const shareSummary = async () => {
+      if (navigator.share) {
+        try { await navigator.share({ title: 'Weekly Gratitude Reflection', text: summaryText }); }
+        catch {}
+      } else {
+        copySummary();
+      }
     };
 
-    function App(){
-      const [data, setData] = useState(load());
-      const [tab, setTab] = useState('today');
-      const [date, setDate] = useState(tzLocalISODate(new Date()));
-      const todays = data[date] || ['', '', ''];
-      const [g1, setG1] = useState(todays[0] || '');
-      const [g2, setG2] = useState(todays[1] || '');
-      const [g3, setG3] = useState(todays[2] || '');
-      const [q, setQ] = useState('');
-      const stats = useMemo(()=>computeStats(data), [data]);
+    const exportCSVWeek = () => {
+      const blob = new Blob([toCSV(weekEntries)], {type:'text/csv'});
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = `gratitudes-week-${start}_to_${end}.csv`;
+      a.click();
+      URL.revokeObjectURL(a.href);
+    };
 
-      useEffect(()=>{ save(data); }, [data]);
-      useEffect(()=>{ const t = data[date] || ['', '', '']; setG1(t[0]||''); setG2(t[1]||''); setG3(t[2]||''); }, [date]);
+    const shiftWeek = (deltaDays) => {
+      // deltaDays should be +/-7 to move whole weeks
+      setEnd(prev => addDays(prev, deltaDays));
+    };
 
-      useEffect(()=>{
-        const btn = document.getElementById('saveBtn');
-        const handler = () => doSave();
-        btn.addEventListener('click', handler);
-        return () => btn.removeEventListener('click', handler);
-      });
-
-      const doSave = () => {
-        const payload = [g1.trim(), g2.trim(), g3.trim()];
-        if (!payload.some(Boolean)) { alert('Add at least one gratitude before saving.'); return; }
-        const next = { ...data, [date]: payload };
-        setData(next);
-        const prevTitle = document.title; document.title = '✓ Saved'; setTimeout(()=>document.title = prevTitle, 900);
-      };
-
-      const onImportJSON = (file) => {
-        const reader = new FileReader();
-        reader.onload = () => {
-          try {
-            const obj = JSON.parse(reader.result);
-            if (typeof obj !== 'object' || Array.isArray(obj)) throw new Error('bad');
-            setData(obj); alert('Import complete.');
-          } catch { alert('Invalid JSON backup.'); }
-        };
-        reader.readAsText(file);
-      };
-
-      const exportJSON = () => {
-        const blob = new Blob([JSON.stringify(data, null, 2)], {type:'application/json'});
-        const a = document.createElement('a'); a.href = URL.createObjectURL(blob);
-        a.download = `gratitudes-${tzLocalISODate(new Date())}.json`; a.click(); URL.revokeObjectURL(a.href);
-      };
-
-      const exportCSV = () => {
-        const blob = new Blob([toCSV(data)], {type:'text/csv'});
-        const a = document.createElement('a'); a.href = URL.createObjectURL(blob);
-        a.download = `gratitudes-${tzLocalISODate(new Date())}.csv`; a.click(); URL.revokeObjectURL(a.href);
-      };
-
-      const filteredKeys = useMemo(()=>{
-        const keys = Object.keys(data).filter(k => Array.isArray(data[k]) && data[k].some(Boolean)).sort().reverse();
-        if (!q.trim()) return keys; const qq = q.toLowerCase();
-        return keys.filter(k => (data[k]||[]).join(' ').toLowerCase().includes(qq));
-      }, [data, q]);
-
-      const monthGroups = useMemo(()=>{
-        const map = {};
-        for (const d of filteredKeys){
-          const label = new Date(d).toLocaleDateString(undefined, {year:'numeric', month:'long'});
-          (map[label] ||= []).push(d);
-        }
-        return map;
-      }, [filteredKeys]);
-
-      return (
-        <div>
-          <div className="tabs">
-            <button className={`tab ${tab==='today'?'active':''}`} onClick={()=>setTab('today')}>Today</button>
-            <button className={`tab ${tab==='history'?'active':''}`} onClick={()=>setTab('history')}>History</button>
+    return (
+      <div className="grid">
+        <div className="row">
+          <div>
+            <h2>Week ending</h2>
+            <input type="date" value={end} onChange={(e)=>setEnd(e.target.value)} />
+            <div className="flex" style={{marginTop:'8px'}}>
+              <button className="btn" onClick={()=>shiftWeek(-7)}>← Prev</button>
+              <button className="btn" onClick={()=>shiftWeek(+7)}>Next →</button>
+              <span className="pill">Range: {humanDate(start)} – {humanDate(end)}</span>
+            </div>
           </div>
 
-          {tab==='today' && (
-            <div className="grid">
-              <div className="row">
-                <div>
-                  <h2>Pick a date</h2>
-                  <input type="date" value={date} onChange={(e)=>setDate(e.target.value)} />
-                </div>
-                <div className="stats">
-                  <div className="stat"><div className="muted">Days Logged</div><div style={{fontSize:'22px', fontWeight:700}}>{stats.totalDays}</div></div>
-                  <div className="stat"><div className="muted">Current Streak</div><div style={{fontSize:'22px', fontWeight:700}}>{stats.currentStreak}🔥</div></div>
-                  <div className="stat"><div className="muted">Longest Streak</div><div style={{fontSize:'22px', fontWeight:700}}>{stats.longestStreak}</div></div>
-                </div>
-              </div>
-
-              <div>
-                <h2>Three things I’m grateful for</h2>
-                <div className="grid">
-                  <input type="text" placeholder="1) ..." value={g1} onChange={(e)=>setG1(e.target.value)} />
-                  <input type="text" placeholder="2) ..." value={g2} onChange={(e)=>setG2(e.target.value)} />
-                  <input type="text" placeholder="3) ..." value={g3} onChange={(e)=>setG3(e.target.value)} />
-                </div>
-                <div className="hr"></div>
-                <div className="flex">
-                  <span className="pill">Tip: hit <b>Save</b> below when done</span>
-                  <span className="pill">Data stays on this device</span>
-                  <span className="pill">Works offline</span>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {tab==='history' && (
-            <div className="grid">
-              <div className="row">
-                <input className="search" placeholder="Search your gratitudes…" value={q} onChange={(e)=>setQ(e.target.value)} />
-                <div className="flex">
-                  <button className="btn" onClick={exportCSV}>Export CSV</button>
-                  <button className="btn" onClick={exportJSON}>Backup (JSON)</button>
-                  <label className="btn warn">
-                    Restore
-                    <input type="file" accept="application/json" style={{display:'none'}} onChange={(e)=>e.target.files[0] && onImportJSON(e.target.files[0])} />
-                  </label>
-                  <span className="right hint">Tap a day to edit.</span>
-                </div>
-              </div>
-
-              {Object.keys(monthGroups).length === 0 && <div className="muted">No entries yet.</div>}
-
-              {Object.entries(monthGroups).map(([month, days]) => (
-                <div key={month}>
-                  <h2>{month}</h2>
-                  <div className="grid">
-                    {days.map(d => (
-                      <div key={d} className="day" onClick={()=>{ setDate(d); setTab('today'); }}>
-                        <div className="flex">
-                          <strong>{humanDate(d)}</strong>
-                          <span className="pill">{(data[d]||[]).filter(Boolean).length}/3</span>
-                        </div>
-                        <ul>
-                          {(data[d]||[]).map((t, i) => t ? <li key={i}>{t}</li> : null)}
-                        </ul>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
+          <div className="stats">
+            <div className="stat"><div className="muted">Days Logged</div><div style={{fontSize:'22px',fontWeight:700}}>{stats.daysLogged}/{stats.daysCovered}</div></div>
+            <div className="stat"><div className="muted">Entries</div><div style={{fontSize:'22px',fontWeight:700}}>{stats.totalItems}</div></div>
+            <div className="stat"><div className="muted">Avg/Day</div><div style={{fontSize:'22px',fontWeight:700}}>{stats.avgPerDay.toFixed(1)}</div></div>
+            <div className="stat"><div className="muted">3/3 Days</div><div style={{fontSize:'22px',fontWeight:700}}>{stats.fullDays}</div></div>
+          </div>
         </div>
-      );
-    }
 
-    ReactDOM.createRoot(document.getElementById('app')).render(<App />);
-  </script>
+        <div>
+          <h2>Top Themes (last 7 days)</h2>
+          <div className="flex">
+            {words.length ? words.map(([w,c])=>(
+              <span className="pill" key={w}>{w} <span className="muted">×{c}</span></span>
+            )) : <span className="muted">No themes yet—log a few days and check back.</span>}
+          </div>
+        </div>
 
-  <script>
-    if ('serviceWorker' in navigator) {
-      window.addEventListener('load', () => {
-        navigator.serviceWorker.register('./service-worker.js').catch(()=>{});
-      });
-    }
-  </script>
+        <div>
+          <h2>Wins (days with 3/3)</h2>
+          <div className="grid">
+            {wins.length ? wins.map(d=>(
+              <div key={d} className="day" onClick={()=>window.scrollTo({top:0,behavior:'smooth'})}>
+                <strong>{humanDate(d)}</strong>
+                <ul>{(weekEntries[d]||[]).filter(Boolean).map((t,i)=><li key={i}>{t}</li>)}</ul>
+              </div>
+            )) : <div className="muted">No 3/3 days in this range (yet!).</div>}
+          </div>
+        </div>
+
+        <div className="flex">
+          <button className="btn" onClick={exportCSVWeek}>Export Week (CSV)</button>
+          <button className="btn" onClick={copySummary}>Copy Summary</button>
+          <button className="btn ok" onClick={shareSummary}>Share</button>
+        </div>
+      </div>
+    );
+  }
+
+  // ---- Main App ----
+  function App(){
+    const [data, setData] = useState(load());
+    const [tab, setTab] = useState('today'); // today | weekly | history
+    const [date, setDate] = useState(tzLocalISODate(new Date()));
+    const todays = data[date] || ['', '', ''];
+    const [g1, setG1] = useState(todays[0] || '');
+    const [g2, setG2] = useState(todays[1] || '');
+    const [g3, setG3] = useState(todays[2] || '');
+    const [q, setQ] = useState('');
+    const stats = useMemo(()=>computeStats(data), [data]);
+
+    useEffect(()=>{ save(data); }, [data]);
+    useEffect(()=>{ // keep inputs in sync when date changes
+      const t = data[date] || ['', '', ''];
+      setG1(t[0]||''); setG2(t[1]||''); setG3(t[2]||'');
+    }, [date]);
+
+    useEffect(()=>{ // wire footer button
+      const btn = document.getElementById('saveBtn');
+      const handler = () => doSave();
+      btn.addEventListener('click', handler);
+      return () => btn.removeEventListener('click', handler);
+    });
+
+    const doSave = () => {
+      const payload = [g1.trim(), g2.trim(), g3.trim()];
+      if (!payload.some(Boolean)) {
+        alert('Add at least one gratitude before saving.');
+        return;
+      }
+      const next = { ...data, [date]: payload };
+      setData(next);
+      const prevTitle = document.title;
+      document.title = '✓ Saved';
+      setTimeout(()=>document.title = prevTitle, 900);
+    };
+
+    const onImportJSON = (file) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        try {
+          const obj = JSON.parse(reader.result);
+          if (typeof obj !== 'object' || Array.isArray(obj)) throw new Error('bad');
+          setData(obj);
+          alert('Import complete.');
+        } catch {
+          alert('Invalid JSON backup.');
+        }
+      };
+      reader.readAsText(file);
+    };
+
+    const exportJSON = () => {
+      const blob = new Blob([JSON.stringify(data, null, 2)], {type:'application/json'});
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = `gratitudes-${tzLocalISODate(new Date())}.json`;
+      a.click();
+      URL.revokeObjectURL(a.href);
+    };
+
+    const exportCSV = () => {
+      const blob = new Blob([toCSV(data)], {type:'text/csv'});
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = `gratitudes-${tzLocalISODate(new Date())}.csv`;
+      a.click();
+      URL.revokeObjectURL(a.href);
+    };
+
+    // Filtered history
+    const filteredKeys = useMemo(()=>{
+      const keys = Object.keys(data).filter(k => Array.isArray(data[k]) && data[k].some(Boolean)).sort().reverse();
+      if (!q.trim()) return keys;
+      const qq = q.toLowerCase();
+      return keys.filter(k => (data[k]||[]).join(' ').toLowerCase().includes(qq));
+    }, [data, q]);
+
+    const monthGroups = useMemo(()=>{
+      const map = {};
+      for (const d of filteredKeys){
+        const label = new Date(d).toLocaleDateString(undefined, {year:'numeric', month:'long'});
+        (map[label] ||= []).push(d);
+      }
+      return map;
+    }, [filteredKeys]);
+
+    return (
+      <div>
+        <div className="tabs">
+          <button className={`tab ${tab==='today'?'active':''}`} onClick={()=>setTab('today')}>Today</button>
+          <button className={`tab ${tab==='weekly'?'active':''}`} onClick={()=>setTab('weekly')}>Weekly</button>
+          <button className={`tab ${tab==='history'?'active':''}`} onClick={()=>setTab('history')}>History</button>
+        </div>
+
+        {tab==='today' && (
+          <div className="grid">
+            <div className="row">
+              <div>
+                <h2>Pick a date</h2>
+                <input type="date" value={date} onChange={(e)=>setDate(e.target.value)} />
+              </div>
+              <div className="stats">
+                <div className="stat">
+                  <div className="muted">Days Logged</div>
+                  <div style={{fontSize:'22px', fontWeight:700}}>{stats.totalDays}</div>
+                </div>
+                <div className="stat">
+                  <div className="muted">Current Streak</div>
+                  <div style={{fontSize:'22px', fontWeight:700}}>{stats.currentStreak}🔥</div>
+                </div>
+                <div className="stat">
+                  <div className="muted">Longest Streak</div>
+                  <div style={{fontSize:'22px', fontWeight:700}}>{stats.longestStreak}</div>
+                </div>
+              </div>
+            </div>
+
+            <div>
+              <h2>Three things I’m grateful for</h2>
+              <div className="grid">
+                <input type="text" placeholder="1) ..." value={g1} onChange={(e)=>setG1(e.target.value)} />
+                <input type="text" placeholder="2) ..." value={g2} onChange={(e)=>setG2(e.target.value)} />
+                <input type="text" placeholder="3) ..." value={g3} onChange={(e)=>setG3(e.target.value)} />
+              </div>
+              <div className="hr"></div>
+              <div className="flex">
+                <span className="pill">Tip: hit <b>Save</b> below when done</span>
+                <span className="pill">Data stays on this device</span>
+                <span className="pill">Works offline</span>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {tab==='weekly' && (
+          <WeeklyView
+            data={data}
+            addDays={addDays}
+            tzLocalISODate={tzLocalISODate}
+            humanDate={humanDate}
+          />
+        )}
+
+        {tab==='history' && (
+          <div className="grid">
+            <div className="row">
+              <input className="search" placeholder="Search your gratitudes…" value={q} onChange={(e)=>setQ(e.target.value)} />
+              <div className="flex">
+                <button className="btn" onClick={exportCSV}>Export CSV</button>
+                <button className="btn" onClick={exportJSON}>Backup (JSON)</button>
+                <label className="btn warn">
+                  Restore
+                  <input type="file" accept="application/json" style={{display:'none'}}
+                         onChange={(e)=>e.target.files[0] && onImportJSON(e.target.files[0])} />
+                </label>
+                <span className="right hint">Tap a day to edit.</span>
+              </div>
+            </div>
+
+            {Object.keys(monthGroups).length === 0 && <div className="muted">No entries yet.</div>}
+
+            {Object.entries(monthGroups).map(([month, days]) => (
+              <div key={month}>
+                <h2>{month}</h2>
+                <div className="grid">
+                  {days.map(d => (
+                    <div key={d} className="day" onClick={()=>{ setDate(d); setTab('today'); }}>
+                      <div className="flex">
+                        <strong>{humanDate(d)}</strong>
+                        <span className="pill">{(data[d]||[]).filter(Boolean).length}/3</span>
+                      </div>
+                      <ul>
+                        {(data[d]||[]).map((t, i) => t ? <li key={i}>{t}</li> : null)}
+                      </ul>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  ReactDOM.createRoot(document.getElementById('app')).render(<App />);
+</script>
 </body>
 </html>

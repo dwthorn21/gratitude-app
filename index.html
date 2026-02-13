@@ -1,0 +1,275 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>3 Gratitudes</title>
+  <meta name="theme-color" content="#0f172a" />
+  <link rel="manifest" href="manifest.webmanifest" />
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <style>
+    :root{--bg:#0b1020;--panel:#111827;--ink:#e5e7eb;--muted:#9ca3af;--accent:#38bdf8;--ok:#22c55e;--warn:#f59e0b;}
+    @media (prefers-color-scheme: light){
+      :root{--bg:#f8fafc;--panel:#ffffff;--ink:#0f172a;--muted:#475569;--accent:#0ea5e9;}
+    }
+    *{box-sizing:border-box}
+    html,body{margin:0;height:100%;background:var(--bg);color:var(--ink);font:16px/1.4 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+    .wrap{max-width:780px;margin:0 auto;padding:16px 14px 64px}
+    .card{background:var(--panel);border:1px solid rgba(148,163,184,.15);border-radius:16px;padding:16px}
+    h1{margin:10px 0 8px;font-size:22px}
+    h2{margin:16px 0 6px;font-size:16px;color:var(--muted)}
+    .row{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+    .tabs{display:flex;gap:8px;margin:8px 0 16px}
+    .tab{flex:1;text-align:center;background:transparent;border:1px solid rgba(148,163,184,.25);color:var(--ink);border-radius:999px;padding:10px;font-weight:600;cursor:pointer}
+    .tab.active{background:var(--accent);border-color:var(--accent);color:white}
+    input[type="text"], input[type="date"], input[type="time"], textarea, .search {
+      width:100%;padding:12px 12px;border-radius:12px;border:1px solid rgba(148,163,184,.25);background:transparent;color:var(--ink)
+    }
+    .hint{font-size:12px;color:var(--muted)}
+    .btn{display:inline-flex;align-items:center;gap:8px;padding:10px 14px;border-radius:12px;border:1px solid rgba(148,163,184,.25);cursor:pointer;background:transparent;color:var(--ink);font-weight:600}
+    .btn.primary{background:var(--accent);border-color:var(--accent);color:white}
+    .btn.ok{background:var(--ok);border-color:var(--ok);color:white}
+    .btn.warn{background:var(--warn);border-color:var(--warn);color:black}
+    .grid{display:grid;gap:10px}
+    .day{padding:12px;border:1px dashed rgba(148,163,184,.25);border-radius:12px}
+    ul{margin:6px 0 0 18px}
+    .stats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+    .stat{padding:12px;border-radius:12px;background:linear-gradient(180deg, rgba(56,189,248,.1), transparent 60%);border:1px solid rgba(148,163,184,.2)}
+    .muted{color:var(--muted)}
+    .footer{position:fixed;left:0;right:0;bottom:0;padding:8px 12px;background:linear-gradient(180deg, transparent, rgba(0,0,0,.2));backdrop-filter:blur(4px);display:flex;justify-content:center}
+    .footer .btn{max-width:780px;width:100%}
+    .hr{height:1px;background:rgba(148,163,184,.2);margin:12px 0}
+    .pill{display:inline-flex;align-items:center;gap:6px;padding:6px 10px;border-radius:999px;border:1px solid rgba(148,163,184,.25);font-size:12px}
+    .flex{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+    .right{margin-left:auto}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>3 Gratitudes</h1>
+    <div id="app" class="card"></div>
+    <p class="hint">Privacy: your entries are stored locally on this device (no cloud).</p>
+  </div>
+
+  <div class="footer">
+    <button id="saveBtn" class="btn primary">Save Today’s Gratitudes</button>
+  </div>
+
+  <!-- React + Babel (for JSX) -->
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+  <script type="text/babel">
+    const {useState, useEffect, useMemo} = React;
+
+    const STORAGE_KEY = 'gratitudeEntries.v1';
+    const load = () => { try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}'); } catch { return {}; } };
+    const save = (data) => localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+
+    const tzLocalISODate = (d=new Date()) => {
+      const yr=d.getFullYear(), mo=String(d.getMonth()+1).padStart(2,'0'), da=String(d.getDate()).padStart(2,'0');
+      return `${yr}-${mo}-${da}`;
+    };
+    const addDays = (iso, delta) => {
+      const [y,m,d] = iso.split('-').map(Number);
+      const t = new Date(y, m-1, d); t.setDate(t.getDate()+delta);
+      return tzLocalISODate(t);
+    };
+    const humanDate = (iso) => {
+      const [y,m,d] = iso.split('-').map(Number);
+      return new Date(y, m-1, d).toLocaleDateString(undefined, {weekday:'short', year:'numeric', month:'short', day:'numeric'});
+    };
+
+    const computeStats = (entriesObj) => {
+      const days = Object.keys(entriesObj).filter(k => Array.isArray(entriesObj[k]) && entriesObj[k].some(Boolean)).sort();
+      if (days.length === 0) return { totalDays:0, currentStreak:0, longestStreak:0 };
+      let longest = 1, current = 0;
+
+      // current streak
+      let day = tzLocalISODate(new Date()), chain = 0;
+      for (let i=0;i<10000;i++){
+        if (days.includes(day)) { chain+=1; day = addDays(day, -1); } else break;
+      }
+      current = chain;
+
+      // longest streak
+      let best = 1, streak = 1;
+      for (let i=1;i<days.length;i++){
+        const prev = addDays(days[i], -1);
+        if (prev === days[i-1]) streak += 1; else { best = Math.max(best, streak); streak = 1; }
+      }
+      longest = Math.max(best, streak);
+      return { totalDays: days.length, currentStreak: current, longestStreak: longest };
+    };
+
+    const toCSV = (entries) => {
+      const rows = [['date','item1','item2','item3']];
+      const keys = Object.keys(entries).sort();
+      keys.forEach(k => {
+        const v = entries[k] || [];
+        rows.push([k, v[0]||'', v[1]||'', v[2]||'']);
+      });
+      return rows.map(r => r.map(x => `"${String(x).replace(/"/g,'""')}"`).join(',')).join('\n');
+    };
+
+    function App(){
+      const [data, setData] = useState(load());
+      const [tab, setTab] = useState('today');
+      const [date, setDate] = useState(tzLocalISODate(new Date()));
+      const todays = data[date] || ['', '', ''];
+      const [g1, setG1] = useState(todays[0] || '');
+      const [g2, setG2] = useState(todays[1] || '');
+      const [g3, setG3] = useState(todays[2] || '');
+      const [q, setQ] = useState('');
+      const stats = useMemo(()=>computeStats(data), [data]);
+
+      useEffect(()=>{ save(data); }, [data]);
+      useEffect(()=>{ const t = data[date] || ['', '', '']; setG1(t[0]||''); setG2(t[1]||''); setG3(t[2]||''); }, [date]);
+
+      useEffect(()=>{
+        const btn = document.getElementById('saveBtn');
+        const handler = () => doSave();
+        btn.addEventListener('click', handler);
+        return () => btn.removeEventListener('click', handler);
+      });
+
+      const doSave = () => {
+        const payload = [g1.trim(), g2.trim(), g3.trim()];
+        if (!payload.some(Boolean)) { alert('Add at least one gratitude before saving.'); return; }
+        const next = { ...data, [date]: payload };
+        setData(next);
+        const prevTitle = document.title; document.title = '✓ Saved'; setTimeout(()=>document.title = prevTitle, 900);
+      };
+
+      const onImportJSON = (file) => {
+        const reader = new FileReader();
+        reader.onload = () => {
+          try {
+            const obj = JSON.parse(reader.result);
+            if (typeof obj !== 'object' || Array.isArray(obj)) throw new Error('bad');
+            setData(obj); alert('Import complete.');
+          } catch { alert('Invalid JSON backup.'); }
+        };
+        reader.readAsText(file);
+      };
+
+      const exportJSON = () => {
+        const blob = new Blob([JSON.stringify(data, null, 2)], {type:'application/json'});
+        const a = document.createElement('a'); a.href = URL.createObjectURL(blob);
+        a.download = `gratitudes-${tzLocalISODate(new Date())}.json`; a.click(); URL.revokeObjectURL(a.href);
+      };
+
+      const exportCSV = () => {
+        const blob = new Blob([toCSV(data)], {type:'text/csv'});
+        const a = document.createElement('a'); a.href = URL.createObjectURL(blob);
+        a.download = `gratitudes-${tzLocalISODate(new Date())}.csv`; a.click(); URL.revokeObjectURL(a.href);
+      };
+
+      const filteredKeys = useMemo(()=>{
+        const keys = Object.keys(data).filter(k => Array.isArray(data[k]) && data[k].some(Boolean)).sort().reverse();
+        if (!q.trim()) return keys; const qq = q.toLowerCase();
+        return keys.filter(k => (data[k]||[]).join(' ').toLowerCase().includes(qq));
+      }, [data, q]);
+
+      const monthGroups = useMemo(()=>{
+        const map = {};
+        for (const d of filteredKeys){
+          const label = new Date(d).toLocaleDateString(undefined, {year:'numeric', month:'long'});
+          (map[label] ||= []).push(d);
+        }
+        return map;
+      }, [filteredKeys]);
+
+      return (
+        <div>
+          <div className="tabs">
+            <button className={`tab ${tab==='today'?'active':''}`} onClick={()=>setTab('today')}>Today</button>
+            <button className={`tab ${tab==='history'?'active':''}`} onClick={()=>setTab('history')}>History</button>
+          </div>
+
+          {tab==='today' && (
+            <div className="grid">
+              <div className="row">
+                <div>
+                  <h2>Pick a date</h2>
+                  <input type="date" value={date} onChange={(e)=>setDate(e.target.value)} />
+                </div>
+                <div className="stats">
+                  <div className="stat"><div className="muted">Days Logged</div><div style={{fontSize:'22px', fontWeight:700}}>{stats.totalDays}</div></div>
+                  <div className="stat"><div className="muted">Current Streak</div><div style={{fontSize:'22px', fontWeight:700}}>{stats.currentStreak}🔥</div></div>
+                  <div className="stat"><div className="muted">Longest Streak</div><div style={{fontSize:'22px', fontWeight:700}}>{stats.longestStreak}</div></div>
+                </div>
+              </div>
+
+              <div>
+                <h2>Three things I’m grateful for</h2>
+                <div className="grid">
+                  <input type="text" placeholder="1) ..." value={g1} onChange={(e)=>setG1(e.target.value)} />
+                  <input type="text" placeholder="2) ..." value={g2} onChange={(e)=>setG2(e.target.value)} />
+                  <input type="text" placeholder="3) ..." value={g3} onChange={(e)=>setG3(e.target.value)} />
+                </div>
+                <div className="hr"></div>
+                <div className="flex">
+                  <span className="pill">Tip: hit <b>Save</b> below when done</span>
+                  <span className="pill">Data stays on this device</span>
+                  <span className="pill">Works offline</span>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {tab==='history' && (
+            <div className="grid">
+              <div className="row">
+                <input className="search" placeholder="Search your gratitudes…" value={q} onChange={(e)=>setQ(e.target.value)} />
+                <div className="flex">
+                  <button className="btn" onClick={exportCSV}>Export CSV</button>
+                  <button className="btn" onClick={exportJSON}>Backup (JSON)</button>
+                  <label className="btn warn">
+                    Restore
+                    <input type="file" accept="application/json" style={{display:'none'}} onChange={(e)=>e.target.files[0] && onImportJSON(e.target.files[0])} />
+                  </label>
+                  <span className="right hint">Tap a day to edit.</span>
+                </div>
+              </div>
+
+              {Object.keys(monthGroups).length === 0 && <div className="muted">No entries yet.</div>}
+
+              {Object.entries(monthGroups).map(([month, days]) => (
+                <div key={month}>
+                  <h2>{month}</h2>
+                  <div className="grid">
+                    {days.map(d => (
+                      <div key={d} className="day" onClick={()=>{ setDate(d); setTab('today'); }}>
+                        <div className="flex">
+                          <strong>{humanDate(d)}</strong>
+                          <span className="pill">{(data[d]||[]).filter(Boolean).length}/3</span>
+                        </div>
+                        <ul>
+                          {(data[d]||[]).map((t, i) => t ? <li key={i}>{t}</li> : null)}
+                        </ul>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById('app')).render(<App />);
+  </script>
+
+  <script>
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => {
+        navigator.serviceWorker.register('./service-worker.js').catch(()=>{});
+      });
+    }
+  </script>
+</body>
+</html>
